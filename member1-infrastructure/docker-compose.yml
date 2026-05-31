@@ -1,0 +1,253 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# CHATBOT BCETD Agent — Docker Compose
+# Member 1 Deliverable: Infrastructure & DevOps Lead
+#
+# One command to launch everything:  docker compose up -d
+# One command to stop everything:    docker compose down
+# Full reset (delete all data):      docker compose down -v
+#
+# Services:
+#   n8n          — Workflow engine (AI orchestration, webhooks)       :5678
+#   qdrant       — Vector database (document embeddings)             :6333
+#   postgres     — Analytics database (query logs, stats)            :5432
+#   ollama       — Local LLM server (optional, for offline mode)     :11434
+#   frontend     — Chat UI + Admin dashboard (nginx)                 :3000
+#   grafana      — Analytics dashboards (optional)                   :3001
+# ═══════════════════════════════════════════════════════════════════════════════
+
+version: "3.8"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SERVICES
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════
+  # n8n — Workflow Engine (Core)
+  # The brain of the system: orchestrates RAG pipeline, guardrails,
+  # analytics logging, and exposes the chat webhook API.
+  # ═══════════════════════════════════════════════════════════════
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: bcetd-n8n
+    restart: unless-stopped
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    environment:
+      # ── Core settings ──
+      - N8N_HOST=${N8N_HOST:-localhost}
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - WEBHOOK_URL=${N8N_PROTOCOL:-http}://${N8N_HOST:-localhost}:${N8N_PORT:-5678}/
+      - GENERIC_TIMEZONE=${TIMEZONE:-Europe/Bucharest}
+      # ── Authentication ──
+      - N8N_BASIC_AUTH_ACTIVE=${N8N_AUTH_ACTIVE:-true}
+      - N8N_BASIC_AUTH_USER=${N8N_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD:-changeme_n8n}
+      # ── Execution settings ──
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=all
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all
+      - EXECUTIONS_DATA_SAVE_MANUAL_EXECUTIONS=true
+      - N8N_METRICS=true
+      # ── OpenAI API key (used by AI nodes) ──
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # ── Allow n8n to call other services by container name ──
+      - NODE_FUNCTION_ALLOW_EXTERNAL=crypto
+      - N8N_RESTRICT_FILE_ACCESS_TO=/data/documents
+      - N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES=false
+      - NODE_FUNCTION_ALLOW_BUILTIN=fs,path,crypto
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ${DOCUMENTS_PATH:-./data/documents}:/data/documents:ro
+    networks:
+      - chatbot-network
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ═══════════════════════════════════════════════════════════════
+  # Qdrant — Vector Database
+  # Stores document embeddings for semantic similarity search.
+  # Data persists in a named volume across container restarts.
+  # ═══════════════════════════════════════════════════════════════
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: bcetd-qdrant
+    restart: unless-stopped
+    ports:
+      - "${QDRANT_PORT:-6333}:6333"
+      - "6334:6334"   # gRPC port (used internally by some clients)
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - chatbot-network
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__CLUSTER__ENABLED=false
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/6333' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ═══════════════════════════════════════════════════════════════
+  # PostgreSQL — Analytics Database
+  # Stores anonymized query logs, daily stats, document usage.
+  # Schema auto-migrates on first start via initdb.d.
+  # ═══════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: bcetd-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-chatbot_stats}
+      - POSTGRES_USER=${POSTGRES_USER:-chatbot_user}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-changeme_postgres}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF8 --locale=C
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Auto-run schema migration on first launch (only runs once)
+      - ./member4-analytics/sql/001_initial_schema.sql:/docker-entrypoint-initdb.d/001_initial_schema.sql:ro
+    networks:
+      - chatbot-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-chatbot_user} -d ${POSTGRES_DB:-chatbot_stats}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ═══════════════════════════════════════════════════════════════
+  # Ollama — Local LLM Server (Optional)
+  # Runs LLMs and embedding models 100% locally. No data leaves
+  # the machine. Requires 8GB+ RAM, GPU strongly recommended.
+  #
+  # After first start, pull models:
+  #   docker exec bcetd-ollama ollama pull llama3.1
+  #   docker exec bcetd-ollama ollama pull nomic-embed-text
+  #
+  # To disable: set ENABLE_OLLAMA=false in .env
+  # ═══════════════════════════════════════════════════════════════
+  ollama:
+    image: ollama/ollama:latest
+    container_name: bcetd-ollama
+    restart: unless-stopped
+    profiles:
+      - ollama                # Only starts with: docker compose --profile ollama up -d
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - chatbot-network
+    deploy:
+      resources:
+        reservations:
+          memory: 4G           # Minimum for small models
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/api/version || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # ═══════════════════════════════════════════════════════════════
+  # Frontend — Chat UI + Admin Dashboard
+  # Serves the student-facing chat interface and admin analytics
+  # page via Nginx. Connects to n8n webhooks for data.
+  # ═══════════════════════════════════════════════════════════════
+  frontend:
+    build:
+      context: ./member5-frontend-python
+      dockerfile: Dockerfile
+    container_name: bcetd-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./data/documents:/app/data/documents:ro
+    networks:
+      - chatbot-network
+    depends_on:
+      n8n:
+        condition: service_healthy
+
+  # ═══════════════════════════════════════════════════════════════
+  # Grafana — Analytics Dashboards (Optional)
+  # Visual dashboards connected to PostgreSQL. Import the
+  # grafana_dashboard.json for a pre-built BCETD dashboard.
+  #
+  # Access: http://localhost:3001  (admin/admin by default)
+  # ═══════════════════════════════════════════════════════════════
+  grafana:
+    image: grafana/grafana-oss:latest
+    container_name: bcetd-grafana
+    restart: unless-stopped
+    profiles:
+      - monitoring           # Only starts with: docker compose --profile monitoring up -d
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:${GRAFANA_PORT:-3001}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # Auto-provision PostgreSQL data source
+      - ./member1-infrastructure/grafana/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./data/documents:/app/data/documents:ro
+    networks:
+      - chatbot-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VOLUMES — Persistent storage that survives container restarts
+# ─────────────────────────────────────────────────────────────────────────────
+
+volumes:
+  n8n_data:
+    driver: local
+    name: bcetd_n8n_data
+  qdrant_data:
+    driver: local
+    name: bcetd_qdrant_data
+  postgres_data:
+    driver: local
+    name: bcetd_postgres_data
+  ollama_data:
+    driver: local
+    name: bcetd_ollama_data
+  grafana_data:
+    driver: local
+    name: bcetd_grafana_data
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NETWORKS — Shared internal network for inter-service communication
+# ─────────────────────────────────────────────────────────────────────────────
+# Inside this network, services reference each other by name:
+#   n8n calls Qdrant at    http://qdrant:6333
+#   n8n calls Postgres at  postgres:5432
+#   n8n calls Ollama at    http://ollama:11434
+#   Frontend calls n8n at  http://n8n:5678
+# No hardcoded IPs needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  chatbot-network:
+    driver: bridge
+    name: bcetd-network
