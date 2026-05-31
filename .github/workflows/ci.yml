@@ -1,0 +1,128 @@
+# ═══════════════════════════════════════════════════════════════
+# CHATBOT BCETD — CI Pipeline
+# Member 1 Deliverable
+#
+# Triggers on: push to main/develop, pull requests
+# Validates: docker-compose syntax, file structure, configs
+# ═══════════════════════════════════════════════════════════════
+
+name: BCETD CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Validate Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker-compose syntax
+        run: |
+          docker compose config --quiet
+          echo "✓ docker-compose.yml is valid"
+
+      - name: Validate docker-compose with all profiles
+        run: |
+          docker compose --profile ollama --profile monitoring config --quiet
+          echo "✓ All profiles are valid"
+
+      - name: Check required files exist
+        run: |
+          REQUIRED_FILES=(
+            "docker-compose.yml"
+            ".env.example"
+            ".gitignore"
+            "member1-infrastructure/scripts/start.sh"
+            "member2-rag-pipeline/workflows/01_web_api_ingestion.json"
+            "member2-rag-pipeline/workflows/02_insert_page_to_qdrant.json"
+            "member2-rag-pipeline/workflows/03_student_query_pipeline.json"
+            "member2-rag-pipeline/workflows/04_document_ingestion_pipeline.json"
+            "member2-rag-pipeline/SYSTEM_PROMPT_DOCUMENTATION.md"
+            "member3-ethics-guardrails/blocklist.txt"
+            "member3-ethics-guardrails/adversarial_test_suite.json"
+            "member3-ethics-guardrails/GUARDRAILS_DOCUMENTATION.md"
+            "member4-analytics/sql/001_initial_schema.sql"
+            "member4-analytics/workflows/workflow_analytics_logging.json"
+            "member4-analytics/workflows/workflow_daily_stats.json"
+            "member4-analytics/workflows/workflow_analytics_api.json"
+            "member5-frontend-python/Dockerfile"
+            "member5-frontend-python/app/templates/chat.html"
+            "member5-frontend-python/app/templates/admin.html"
+            "shared/api_contract.json"
+          )
+          MISSING=0
+          for FILE in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$FILE" ]; then
+              echo "✗ MISSING: $FILE"
+              MISSING=$((MISSING+1))
+            else
+              echo "✓ $FILE"
+            fi
+          done
+          if [ $MISSING -gt 0 ]; then
+            echo ""
+            echo "ERROR: $MISSING required file(s) missing"
+            exit 1
+          fi
+
+      - name: Validate JSON files
+        run: |
+          echo "Validating n8n workflow JSONs..."
+          for f in $(find . -name "*.json" -not -path "./node_modules/*"); do
+            python3 -m json.tool "$f" > /dev/null 2>&1 || {
+              echo "✗ Invalid JSON: $f"
+              exit 1
+            }
+            echo "✓ $f"
+          done
+
+      - name: Check .env.example has no real secrets
+        run: |
+          if grep -qE "sk-[a-zA-Z0-9]{20,}" .env.example; then
+            echo "✗ ERROR: .env.example contains what looks like a real API key!"
+            exit 1
+          fi
+          if grep -q "changeme" .env.example; then
+            echo "✓ Passwords in .env.example are placeholder values"
+          fi
+
+      - name: Check .env is not committed
+        run: |
+          if [ -f ".env" ]; then
+            echo "✗ WARNING: .env file is committed! Remove it and add to .gitignore"
+            exit 1
+          fi
+          echo "✓ .env is not committed"
+
+      - name: Validate SQL syntax (basic)
+        run: |
+          if grep -qE "CREATE TABLE|CREATE INDEX|CREATE FUNCTION" member4-analytics/sql/001_initial_schema.sql; then
+            echo "✓ Schema migration contains expected DDL statements"
+          else
+            echo "✗ Schema migration may be incomplete"
+            exit 1
+          fi
+
+  build:
+    name: Build Frontend Container
+    runs-on: ubuntu-latest
+    needs: validate
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build frontend Docker image
+        run: |
+          docker build -t bcetd-frontend:ci ./member5-frontend-python
+          echo "✓ Frontend container builds successfully"
+
+      - name: Run Python unit tests
+        run: |
+          docker run --rm bcetd-frontend:ci python -m pytest tests/ -v
+          echo "✓ Frontend unit tests pass"

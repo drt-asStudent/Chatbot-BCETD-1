@@ -1,0 +1,62 @@
+# ═══════════════════════════════════════════════════════════════
+# CHATBOT BCETD — Git Ignore Rules
+# Member 1 Deliverable
+# ═══════════════════════════════════════════════════════════════
+
+# ── SECRETS (CRITICAL — never commit these) ──
+.env
+*.pem
+*.key
+*.cert
+secrets/
+
+# ── DATA (user documents, database files) ──
+data/documents/*
+!data/documents/.gitkeep
+backups/
+*.sql.gz
+
+# ── Docker volumes (if mounted locally) ──
+pgdata/
+qdrant_storage/
+n8n_data/
+ollama_models/
+grafana_data/
+
+# ── IDE & OS ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Node.js (if any frontend tooling) ──
+node_modules/
+npm-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+
+# ── Python (if any local scripts) ──
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# ── Logs ──
+*.log
+logs/
+
+# ── Test results ──
+test_results_*.log
+coverage/
+
+# ── Build artifacts ──
+dist/
+build/
+*.tar.gz

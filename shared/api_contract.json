@@ -1,0 +1,108 @@
+{
+  "api_contract": "BCETD Chat Webhook API",
+  "version": "1.0",
+  "base_url": "http://localhost:5678/webhook",
+  "endpoints": {
+    "chat": {
+      "method": "POST",
+      "path": "/chat",
+      "description": "Student query endpoint — accepts a question, returns an AI-generated answer grounded in university documents",
+      "request": {
+        "content_type": "application/json",
+        "body": {
+          "query": {
+            "type": "string",
+            "required": true,
+            "max_length": 500,
+            "description": "The student's question in Romanian or English"
+          },
+          "session_id": {
+            "type": "string (UUID v4)",
+            "required": false,
+            "default": "anonymous",
+            "description": "Rotating session ID for grouping related queries. Frontend should generate a new UUID every hour."
+          }
+        },
+        "example": {
+          "query": "Care este calendarul academic pentru anul 2026?",
+          "session_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+        }
+      },
+      "response": {
+        "success": {
+          "status": 200,
+          "body": {
+            "answer": {
+              "type": "string",
+              "description": "The AI-generated answer with source citations. May contain Markdown formatting."
+            },
+            "sources": {
+              "type": "array of strings",
+              "description": "List of source document filenames used to generate the answer"
+            },
+            "confidence": {
+              "type": "number (0-1)",
+              "description": "The top relevance score from vector search. Higher = more confident."
+            }
+          },
+          "example": {
+            "answer": "Calendarul academic pentru anul universitar 2025-2026 prevede începerea semestrului I pe data de 1 octombrie 2025 și încheierea pe 31 ianuarie 2026. Sesiunea de examene este programată în perioada 18 ianuarie - 6 februarie 2026.\n\n📄 **Surse:** Academic_Calendar_2026.pdf",
+            "sources": ["Academic_Calendar_2026.pdf"],
+            "confidence": 0.89
+          }
+        },
+        "rejection": {
+          "status": 200,
+          "body": {
+            "answer": "string — rejection/fallback message",
+            "sources": "[] — always empty for rejections",
+            "confidence": "0 — always zero for rejections",
+            "rejected": "true — indicates query was rejected by guardrails",
+            "reason": "string — category: OFF_TOPIC | INAPPROPRIATE | PROMPT_INJECTION"
+          },
+          "example": {
+            "answer": "Această întrebare nu este legată de serviciile sau activitățile Universității Lucian Blaga din Sibiu.",
+            "sources": [],
+            "confidence": 0,
+            "rejected": true,
+            "reason": "OFF_TOPIC"
+          }
+        },
+        "fallback": {
+          "status": 200,
+          "body": {
+            "answer": "string — fallback message when no documents match",
+            "sources": "[] — empty",
+            "confidence": "0",
+            "fallback": "true — indicates no relevant documents found"
+          },
+          "example": {
+            "answer": "Nu am găsit informații suficiente în documentele disponibile despre acest subiect. Vă recomand să contactați secretariatul facultății.",
+            "sources": [],
+            "confidence": 0,
+            "fallback": true
+          }
+        },
+        "error": {
+          "status": 400,
+          "body": {
+            "answer": "string — error message",
+            "sources": "[]",
+            "confidence": "0"
+          }
+        }
+      },
+      "cors": {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type"
+      }
+    }
+  },
+  "notes": {
+    "markdown_in_answers": "The 'answer' field may contain Markdown formatting (bold, lists, headers). The frontend should render this as HTML using a library like marked.js.",
+    "source_citations": "Source citations are embedded in the answer text as '📄 Surse: filename.pdf'. The 'sources' array provides them programmatically for separate display.",
+    "rate_limiting": "No rate limiting is implemented at the webhook level. Consider adding rate limiting in the frontend or via a reverse proxy.",
+    "timeout": "Expect responses within 3-10 seconds depending on LLM latency. Set frontend timeout to 30 seconds."
+  }
+}

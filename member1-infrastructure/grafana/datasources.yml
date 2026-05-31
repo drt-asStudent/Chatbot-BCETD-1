@@ -1,0 +1,24 @@
+# Grafana Datasource Provisioning
+# Auto-configures the PostgreSQL connection on first boot
+# Member 1 Deliverable
+
+apiVersion: 1
+
+datasources:
+  - name: ChatBot Stats
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: chatbot_stats
+    user: chatbot_user
+    secureJsonData:
+      password: changeme_postgres
+    jsonData:
+      sslmode: disable
+      maxOpenConns: 5
+      maxIdleConns: 2
+      connMaxLifetime: 14400
+      postgresVersion: 1600    # v16
+      timescaledb: false
+    isDefault: true
+    editable: true
