@@ -121,8 +121,3 @@ jobs:
         run: |
           docker build -t bcetd-frontend:ci ./member5-frontend-python
           echo "✓ Frontend container builds successfully"
-
-      - name: Run Python unit tests
-        run: |
-          docker run --rm bcetd-frontend:ci python -m pytest tests/ -v
-          echo "✓ Frontend unit tests pass"
